@@ -1,0 +1,366 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Credit to MikeC for the first version, Fred6724 for the updated version,
+// TheScrutiniser and GlinckEastwoot for the ADR% formula.
+// Combined version: all original Swing Data metrics + ATR× extension from 50 SMA with overextension dots.
+
+//@version=6
+indicator(title='Swing Data + ATR× from 50MA', shorttitle='Swing Data + ATR×', overlay=true, max_bars_back=253)
+
+// ====================== Inputs: Table ======================
+show_empty_row    = input(true, title='Add an empty row above the displayed values', tooltip='Prevents pane icons from overlapping the table when multiple panes are shown and the chart pane is hovered', group='Table')
+add_empty_row_dn  = input.int(0, title='Add empty rows under the displayed values', tooltip='Prevents the table from being overlapped at bottom-right', minval=0, maxval=5, step=1, group='Table')
+txt_col           = input(color.white, title='Text Color', group='Table')
+posTable          = input.string(defval='Top Right', title='Table Position', options=['Top Left', 'Top Right', 'Bottom Left', 'Bottom Right'], group='Table')
+tbl_size          = input.string('Normal', title='Table Size', options=['Tiny', 'Small', 'Normal', 'Large'], group='Table')
+txt_align_left    = input.string('Center', title='Left Column Text Align', options=['Left', 'Center', 'Right'], group='Table')
+txt_align_right   = input.string('Center', title='Right Column Text Align', options=['Left', 'Center', 'Right'], group='Table')
+bg_col            = input(#00000000, title='Background Color', group='Table')
+
+// ====================== Inputs: Display ======================
+show_mktCap       = input(true,  title='Show Market Cap', group='Display')
+show_float        = input(true,  title='Show Shares Float', group='Display')
+show_floatpercent = input(true,  title='Show Float%', group='Display')
+show_adrp         = input(true,  title='Show ADR%', group='Display')
+show_atrx         = input(true,  title='Show ATR× from SMA50', group='Display')
+show_atrPer       = input(false, title='Show ATR%', group='Display')
+show_atr          = input(false, title='Show ATR', group='Display')
+show_ipo_date     = input(false, title='Show IPO Timer', group='Display')
+show_lod_dist     = input(true,  title='Show LoD dist.', group='Display')
+show_lod_price    = input(true,  title='Show LoD Price', group='Display')
+show_dist_high    = input(true,  title='Show %dist of 52W High', group='Display')
+show_dist_low     = input(true,  title='Show %dist of 52W Low', group='Display')
+show_ADVS         = input(true,  title='Show Avg $ Volume', group='Display')
+show_ADV          = input(true,  title='Show Avg Volume', group='Display')
+show_projectedVol = input(true,  title='Show Projected Volume', group='Display')
+show_relVol       = input(true,  title='Show Relative Volume', group='Display')
+show_volBuzz      = input(true,  title='Show Vol. Buzz', group='Display')
+show_UDratio      = input(true,  title='Show U/D Ratio', group='Display')
+show_rs_rating    = input(true,  title='Show RS Rating', group='Display')
+show_liqCap       = input(true,  title='Show Liquidity Cap', group='Display')
+show_selectSector = input(false, title='Show Selector Sector', group='Display', inline='1')
+show_sector_rs    = input(false, title='Sector RS', group='Display', inline='1')
+sector_chg_Up     = input(color.rgb(165, 214, 167, 0), title='Positive Chg', group='Display')
+sector_chg_Dn     = input(color.rgb(250, 161, 164, 0), title='Negative Chg', group='Display')
+show_sector       = input(true,  title='Show Sector', group='Display')
+show_ind          = input(true,  title='Show Ind. Grp', group='Display')
+
+// ====================== Inputs: ATR× dots ======================
+show_atrx_dots    = input(true, title='Show ATR× dots (≥7×)', group='ATR× Dots')
+atrx_lvl_7        = input.float(7.0,  'ATR× 7× level',  step=0.1, group='ATR× Dots')
+atrx_lvl_8        = input.float(8.0,  'ATR× 8× level',  step=0.1, group='ATR× Dots')
+atrx_lvl_9        = input.float(9.0,  'ATR× 9× level',  step=0.1, group='ATR× Dots')
+atrx_lvl_10       = input.float(10.0, 'ATR× 10× level', step=0.1, group='ATR× Dots')
+atrx_lvl_11       = input.float(11.0, 'ATR× 11× level', step=0.1, group='ATR× Dots')
+input_char        = input.string('・', title='ATR× dot character', group='ATR× Dots', tooltip='Dot colors can be changed in the Style tab')
+
+// ====================== Inputs: Parameters ======================
+adrp_len          = input(20, title='ADR% Length', group='Parameters', tooltip='Number of bars used in the ADR% calculation')
+atr_len           = input(14, title='ATR Length', group='Parameters', tooltip='Number of bars used in the ATR calculation (also used for ATR× from SMA50)')
+len               = input(50, 'Volume MA Length', group='Parameters', tooltip='Number of bars for the volume MA')
+
+// ====================== UI switches ======================
+tablePos = switch posTable
+    'Top Left'     => position.top_left
+    'Top Right'    => position.top_right
+    'Bottom Left'  => position.bottom_left
+    'Bottom Right' => position.bottom_right
+
+size_tbl = switch tbl_size
+    'Normal' => size.normal
+    'Tiny'   => size.tiny
+    'Small'  => size.small
+    'Large'  => size.large
+
+align_txt_left = switch txt_align_left
+    'Left'   => text.align_left
+    'Center' => text.align_center
+    'Right'  => text.align_right
+
+align_txt_right = switch txt_align_right
+    'Left'   => text.align_left
+    'Center' => text.align_center
+    'Right'  => text.align_right
+
+// ====================== Helpers ======================
+// Scale a number to K / M / B and return the suffix
+f_scale(float v) =>
+    float out = v
+    string u = ''
+    if v >= 1e3 and v < 1e6
+        out := v / 1e3
+        u := 'K'
+    else if v >= 1e6 and v < 1e9
+        out := v / 1e6
+        u := 'M'
+    else if v >= 1e9
+        out := v / 1e9
+        u := 'B'
+    [out, u]
+
+// ====================== Calculations ======================
+tf = timeframe.period
+s  = syminfo.tickerid
+
+// ADR% / ATR
+arp       = 100 * (ta.sma(high / low, adrp_len) - 1)
+atr       = ta.atr(atr_len)
+atrp      = 100 * (atr / close)
+lod_dist  = 100 * (close - low) / atr
+lod_price = low
+
+// ATR× from SMA50 (daily, no lookahead) — signed, negative when below SMA50
+sma50D           = request.security(s, 'D', ta.sma(close, 50), barmerge.gaps_off, barmerge.lookahead_off)
+atrD             = request.security(s, 'D', ta.atr(atr_len),   barmerge.gaps_off, barmerge.lookahead_off)
+gain_from_ma_pct = close / sma50D - 1.0
+atr_pct_daily    = atrD / close
+atrx_from_sma50  = (na(sma50D) or sma50D == 0 or na(atrD) or atrD <= 0) ? na : gain_from_ma_pct / atr_pct_daily
+
+// IPO age (years)
+ipoSince = request.security(s, 'D', (bar_index + 1) / 252)
+
+// Volume
+vol    = request.security(s, tf, volume)
+ma     = ta.sma(vol, len)
+relVol = vol / ma * 100
+
+// Average volume and average $ volume
+avgDaVolCalc = request.security(s, tf, ma)
+closeDa      = request.security(s, tf, close)
+[avgDaVol, uV]     = f_scale(avgDaVolCalc)
+[advdolDa, uVDoll] = f_scale(closeDa * avgDaVolCalc)
+
+// Market cap
+float MCapCalc = request.financial(s, 'MARKET_CAP_BASIC', 'D', ignore_invalid_symbol=true)
+if na(MCapCalc)
+    MCapCalc := syminfo.shares_outstanding_total * close
+[MCap, uM] = f_scale(MCapCalc)
+
+// Shares float / Float%
+float FSO     = syminfo.shares_outstanding_float
+floatPer      = FSO * closeDa / MCapCalc * 100
+[sharesFloat, uF] = f_scale(FSO)
+
+// Projected volume (credit Bob-Lablaw)
+time_passed = (timenow - time) / 1000
+time_left   = (time_close - timenow) / 1000
+float volume_projected_raw = volume
+if time_left > 0 and time_passed > 0
+    volume_projected_raw := volume + (volume / time_passed) * time_left
+[volume_projected, uP] = f_scale(volume_projected_raw)
+
+// Volume Buzz (credit monkaOMEGA)
+volBuzz = 100 * (volume / ta.sma(volume, len) - 1)
+
+// Liquidity cap (1% of daily volume MA)
+volDa        = request.security(s, 'D', volume)
+maDa         = request.security(s, 'D', ta.sma(volDa, len))
+liquidityCap = maDa * 0.01
+
+// Up/Down volume ratio (50 bars)
+upVol        = close > close[1] ? volume : 0
+dnVol        = close < close[1] ? volume : 0
+sumUp        = math.sum(upVol, 50)
+sumDn        = math.sum(dnVol, 50)
+upDnVolRatio = sumDn > 0 ? sumUp / sumDn : na
+
+// Distance from 52W high/low
+fiftyTwoWeekHigh = request.security(s, 'W', ta.highest(high, 52))
+fiftyTwoWeekLow  = request.security(s, 'W', ta.lowest(low, 52))
+distFromHigh     = 100 * (closeDa / fiftyTwoWeekHigh - 1)
+distFromLow      = 100 * (closeDa / fiftyTwoWeekLow - 1)
+
+// Sector / industry
+string sector = syminfo.sector
+if na(sector)
+    sector := 'N/A'
+string industryGrp = syminfo.industry
+if na(industryGrp)
+    industryGrp := 'N/A'
+
+get_sector_etf(sector) =>
+    string etf = switch sector
+        'Technology Services'    => 'XLK'
+        'Electronic Technology'  => 'XLK'
+        'Finance'                => 'XLF'
+        'Health Technology'      => 'XLV'
+        'Health Services'        => 'XLV'
+        'Retail Trade'           => 'XLP'  // Can also be XLY
+        'Consumer Non-Durables'  => 'XLP'
+        'Energy Minerals'        => 'XLE'
+        'Producer Manufacturing' => 'XLI'
+        'Consumer Services'      => 'XLY'
+        'Consumer Durables'      => 'XLY'
+        'Commercial Services'    => 'XLI'
+        'Industrial Services'    => 'XLI'
+        'Utilities'              => 'XLU'
+        'Transportation'         => 'XLI'
+        'Non-Energy Minerals'    => 'XLB'
+        'Process Industries'     => 'XLB'
+        'Communications'         => 'XLC'
+        'Distribution Services'  => 'XLI'
+        'Miscellaneous'          => 'SPY'
+        => 'SPY'
+    etf
+
+sector_etf  = get_sector_etf(sector)
+closeSector = request.security(sector_etf, 'D', close)
+openSector  = request.security(sector_etf, 'D', open)
+sector_chg  = (closeSector - openSector) / openSector * 100  // open-to-close
+
+// ====================== RS Rating (IBD-style) ======================
+f_attributePercentile(totalRsScore, tallerPerf, smallerPerf, rangeUp, rangeDn, weight) =>
+    sum = totalRsScore + (totalRsScore - smallerPerf) * weight
+    if sum > tallerPerf - 1
+        sum := tallerPerf - 1
+    k1 = smallerPerf / rangeDn
+    k2 = (tallerPerf - 1) / rangeUp
+    k3 = (k1 - k2) / (tallerPerf - 1 - smallerPerf)
+    RsRating = sum / (k1 - k3 * (totalRsScore - smallerPerf))
+    if RsRating > rangeUp
+        RsRating := rangeUp
+    if RsRating < rangeDn
+        RsRating := rangeDn
+    RsRating
+
+f_get_rs_rating(sym) =>
+    n63  = bar_index < 63  ? bar_index : 63
+    n126 = bar_index < 126 ? bar_index : 126
+    n189 = bar_index < 189 ? bar_index : 189
+    n252 = bar_index < 252 ? bar_index : 252
+
+    closeDaRs    = request.security(sym,      'D', close)
+    spxcloseDaRs = request.security('SP:SPX', 'D', close)
+
+    float rs_stock = 0.4 * closeDaRs / closeDaRs[n63]    + 0.2 * closeDaRs / closeDaRs[n126]    + 0.2 * closeDaRs / closeDaRs[n189]    + 0.2 * closeDaRs / closeDaRs[n252]
+    float rs_ref   = 0.4 * spxcloseDaRs / spxcloseDaRs[n63] + 0.2 * spxcloseDaRs / spxcloseDaRs[n126] + 0.2 * spxcloseDaRs / spxcloseDaRs[n189] + 0.2 * spxcloseDaRs / spxcloseDaRs[n252]
+
+    float totalRsScore  = rs_stock / rs_ref * 100
+    float totalRsRating = -1
+
+    // Market-wide RS score distribution from the seed
+    curveRsPerf = request.seed('seed_fred6725_rs_rating', 'RSRATING', close)
+    delta = nz(ta.barssince(not na(curveRsPerf)))
+
+    var float[] different_values = array.new_float(7)
+    var int counter = 0
+
+    for i = delta to 34 + delta
+        close_value = nz(curveRsPerf[i])
+        if not array.includes(different_values, close_value) and counter < 7 and close_value != 0
+            array.set(different_values, counter, close_value)
+            counter += 1
+
+    first = array.get(different_values, 0)
+    scnd  = array.get(different_values, 1)
+    thrd  = array.get(different_values, 2)
+    frth  = array.get(different_values, 3)
+    ffth  = array.get(different_values, 4)
+    sxth  = array.get(different_values, 5)
+    svth  = array.get(different_values, 6)
+
+    if totalRsScore >= first
+        totalRsRating := 99
+    if totalRsScore <= svth
+        totalRsRating := 1
+    if totalRsScore < first and totalRsScore >= scnd
+        totalRsRating := f_attributePercentile(totalRsScore, first, scnd, 98, 90, 0.33)
+    if totalRsScore < scnd and totalRsScore >= thrd
+        totalRsRating := f_attributePercentile(totalRsScore, scnd, thrd, 89, 70, 2.1)
+    if totalRsScore < thrd and totalRsScore >= frth
+        totalRsRating := f_attributePercentile(totalRsScore, thrd, frth, 69, 50, 0)
+    if totalRsScore < frth and totalRsScore >= ffth
+        totalRsRating := f_attributePercentile(totalRsScore, frth, ffth, 49, 30, 0)
+    if totalRsScore < ffth and totalRsScore >= sxth
+        totalRsRating := f_attributePercentile(totalRsScore, ffth, sxth, 29, 10, 0)
+    if totalRsScore < sxth and totalRsScore >= svth
+        totalRsRating := f_attributePercentile(totalRsScore, sxth, svth, 9, 2, 0)
+    totalRsRating
+
+sectorRs      = f_get_rs_rating(sector_etf)
+totalRsRating = f_get_rs_rating(s)
+
+// ====================== Table ======================
+tfDaily = timeframe.isdaily
+var table t = table.new(tablePos, 2, 32, bgcolor=bg_col)
+
+f_row(int row, string label, string value) =>
+    table.cell(t, 0, row, label, text_color=txt_col, text_size=size_tbl)
+    table.cell(t, 1, row, value, text_color=txt_col, text_size=size_tbl)
+    table.cell_set_text_halign(t, 0, row, align_txt_left)
+    table.cell_set_text_halign(t, 1, row, align_txt_right)
+
+if barstate.islast
+    if show_empty_row
+        table.cell(t, 0, 0, '')
+        table.cell(t, 1, 0, '')
+    if show_mktCap
+        f_row(1, 'Market Cap', str.tostring(MCap, '0.00') + uM)
+    if show_float
+        f_row(2, 'Shares Float', str.tostring(sharesFloat, '0.00') + uF)
+    if show_floatpercent
+        f_row(3, 'Float %', str.tostring(floatPer, '0.0') + '%')
+    if show_adrp
+        f_row(4, 'ADR%', str.tostring(arp, '0.00') + '%')
+    if show_atrx
+        f_row(5, 'ATR× from 50MA', na(atrx_from_sma50) ? '-' : str.tostring(atrx_from_sma50, '0.00') + '×')
+    if show_atrPer
+        f_row(6, 'ATR%', str.tostring(atrp, '0.00') + '%')
+    if show_atr
+        f_row(7, 'ATR', str.tostring(atr, '0.00'))
+    if show_ipo_date
+        f_row(8, 'IPO Timer', str.tostring(ipoSince, '0.00') + 'Y')
+    if show_lod_dist
+        f_row(9, 'LoD dist.', str.tostring(lod_dist, '0') + '%')
+    if show_lod_price
+        f_row(10, 'LoD Price', str.tostring(lod_price, '0.00'))
+    if show_dist_high
+        f_row(11, 'Off 52W High', str.tostring(distFromHigh, '0.0') + '%')
+    if show_dist_low
+        f_row(12, 'Above 52W Low', '+' + str.tostring(distFromLow, '0.0') + '%')
+    if show_ADVS
+        f_row(13, 'Avg $ Vol', '$' + str.tostring(advdolDa, '0.00') + uVDoll)
+    if show_ADV
+        f_row(14, 'Avg Vol', str.tostring(avgDaVol, '0.00') + uV)
+    if show_projectedVol
+        f_row(15, 'Proj. Vol', str.tostring(volume_projected, '0.00') + uP)
+    if show_relVol
+        f_row(16, 'Rel. Vol', str.tostring(relVol, '0') + '%')
+    if show_volBuzz
+        f_row(17, 'Vol. Buzz', str.tostring(volBuzz, '0') + '%')
+    if show_UDratio
+        f_row(18, 'U/D Ratio', na(upDnVolRatio) ? '-' : str.tostring(upDnVolRatio, '0.0'))
+    if show_rs_rating
+        f_row(19, 'RS Rating', tfDaily ? str.tostring(totalRsRating, '0.0') : '-')
+    if show_liqCap
+        f_row(20, 'Liquidity Cap (Shares)', str.tostring(liquidityCap, '0'))
+    if show_sector
+        table.cell(t, 0, 21, sector, text_color=txt_col, text_size=size_tbl)
+        table.cell_set_text_halign(t, 0, 21, align_txt_left)
+        table.merge_cells(t, 0, 21, 1, 21)
+    if show_selectSector
+        string sectorData = show_sector_rs ? sector_etf + ' (RS ' + str.tostring(sectorRs, '0') + ')' : sector_etf
+        string sectorChg  = (sector_chg > 0 ? '+' : '') + str.tostring(sector_chg, '0.00') + '%'
+        table.cell(t, 0, 22, sectorData, text_color=txt_col, text_size=size_tbl)
+        table.cell(t, 1, 22, sectorChg, text_color=sector_chg > 0 ? sector_chg_Up : sector_chg_Dn, text_size=size_tbl)
+        table.cell_set_text_halign(t, 0, 22, align_txt_left)
+        table.cell_set_text_halign(t, 1, 22, align_txt_right)
+    if show_ind
+        table.cell(t, 0, 23, industryGrp, text_color=txt_col, text_size=size_tbl)
+        table.cell_set_text_halign(t, 0, 23, align_txt_left)
+        table.merge_cells(t, 0, 23, 1, 23)
+    for i = 1 to 5
+        if add_empty_row_dn >= i
+            table.cell(t, 0, 24 + i, '', text_size=size_tbl)
+
+// ====================== ATR× overextension dots ======================
+cond_11 = show_atrx_dots and atrx_from_sma50 >= atrx_lvl_11
+cond_10 = show_atrx_dots and atrx_from_sma50 >= atrx_lvl_10 and atrx_from_sma50 < atrx_lvl_11
+cond_9  = show_atrx_dots and atrx_from_sma50 >= atrx_lvl_9  and atrx_from_sma50 < atrx_lvl_10
+cond_8  = show_atrx_dots and atrx_from_sma50 >= atrx_lvl_8  and atrx_from_sma50 < atrx_lvl_9
+cond_7  = show_atrx_dots and atrx_from_sma50 >= atrx_lvl_7  and atrx_from_sma50 < atrx_lvl_8
+
+plotchar(cond_11, title='ATR× ≥ 11', char=input_char, location=location.abovebar, size=size.small, color=color.rgb(215, 35, 35))
+plotchar(cond_10, title='ATR× ≥ 10', char=input_char, location=location.abovebar, size=size.small, color=color.rgb(227, 80, 68))
+plotchar(cond_9,  title='ATR× ≥ 9',  char=input_char, location=location.abovebar, size=size.small, color=color.rgb(232, 125, 96))
+plotchar(cond_8,  title='ATR× ≥ 8',  char=input_char, location=location.abovebar, size=size.small, color=color.rgb(241, 160, 107))
+plotchar(cond_7,  title='ATR× ≥ 7',  char=input_char, location=location.abovebar, size=size.small, color=color.rgb(243, 196, 122))
